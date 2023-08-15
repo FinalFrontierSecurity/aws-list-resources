@@ -15,6 +15,10 @@ argument. Read-only IAM permissions are sufficient.
 
 When running the script, it is recommended to include the `us-east-1` region in addition to the region(s) that your workload uses primarily. This ensures that resources of global AWS services are captured as well.
 
+Use `--resource-scope all` to set the scan to all resource types provided by Cloud Control. By default, it will only identify resources types listed in the `essential-resource-types.txt` file.
+Two output file formats are supported - JSON and CSV. Switch between these with the `--output-format` flag. CSV is default.
+The output can either list the identified resources by name or by count. Switch between these options with `--output-type`. Count is default
+
 Example run:
 
 ```bash
