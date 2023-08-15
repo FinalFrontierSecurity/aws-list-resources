@@ -7,6 +7,8 @@ import concurrent.futures
 import datetime
 import json
 import sys
+import copy
+import csv
 
 
 boto_config = botocore.config.Config(retries={"total_max_attempts": 5, "mode": "standard"})
@@ -40,6 +42,11 @@ def get_available_resource_types(boto_session, region):
 
     return sorted(resource_types)
 
+def get_essential_resource_types():
+    """
+    Returns a list of essential resource types from a txt file when a full list is not desired
+    """
+    return open('essential-resource-types.txt').read().splitlines()
 
 def get_resources(boto_session, region, resource_type):
     """
@@ -80,6 +87,47 @@ def get_resources(boto_session, region, resource_type):
 
     return (resource_type, list_operation_was_denied, sorted(collected_resources))
 
+def get_counts(result_collection):
+    result_count_collection = copy.deepcopy(result_collection)
+    result_count_collection['regions'] = {}
+    for region in result_collection['regions']:
+        result_count_collection['regions'][region] = {}
+        for resource_type in result_collection['regions'][region]:
+            result_count_collection['regions'][region][resource_type] = len(result_collection['regions'][region][resource_type])
+    return result_count_collection
+            
+def write_to_json(result_collection, output_type):
+    output_file_name = "resources_{}_{}.json".format(sts_response["Account"], run_timestamp)
+    if output_type == "COUNT":
+        result_collection = get_counts(result_collection)
+    with open(output_file_name, "w") as out_file:
+        json.dump(result_collection, out_file, indent=2, sort_keys=True)
+
+    print("Output file written to {}".format(output_file_name))
+            
+def write_to_csv(result_collection, output_type):
+    print(result_collection)
+    output_file_name = "resources_{}_{}.csv".format(sts_response["Account"], run_timestamp)
+    headers = []
+    rows = []
+    if output_type == "COUNT":
+        result_collection = get_counts(result_collection)
+        headers = ['Resource Type', 'Region', 'Count']
+        for region in result_collection['regions']:
+            for resource_type in result_collection['regions'][region]:
+                rows.append([resource_type, region, str(result_collection['regions'][region][resource_type])])
+    else:
+        headers = ['Resource Type', 'Region', 'Resource']
+        for region in result_collection['regions']:
+            for resource_type in result_collection['regions'][region]:
+                for resource in result_collection['regions'][region][resource_type]:
+                    rows.append([resource_type, region, resource])
+    with open(output_file_name, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(headers)
+        writer.writerows(rows)
+
+    print("Output file written to {}".format(output_file_name))
 
 if __name__ == "__main__":
     # Check runtime environment
@@ -91,10 +139,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--regions", required=True, nargs=1, help="comma-separated list of targeted AWS regions")
     parser.add_argument("--profile", required=False, nargs=1, help="optional named AWS profile to use")
+    parser.add_argument("--resource-scope",required=False, nargs=1, help="resouce scheme to query",choices=['all','essential'])
+    parser.add_argument("--output-type", required=False, nargs=1, help="retrieve a count or name of each resource found", choices=['count','resource'])
+    parser.add_argument("--output-format", required=False, nargs=1, choices=['csv', 'json'])
 
     args = parser.parse_args()
     target_regions = [region for region in args.regions[0].split(",") if region]
     profile = args.profile[0] if args.profile else None
+    resource_scope = args.resource_scope[0].upper() if args.resource_scope else "ESSENTIAL"
+    output_type = args.output_type[0].upper() if args.output_type else "COUNT"
+    print(output_type)
+    output_format = args.output_format[0].upper() if args.output_format else "CSV"
     boto_session = boto3.session.Session(profile_name=profile)
 
     # Test for valid credentials
@@ -123,7 +178,12 @@ if __name__ == "__main__":
     # Collect resources for each target region
     print("Analyzing account ID {}".format(sts_response["Account"]))
     for region in target_regions:
-        resource_types = get_available_resource_types(boto_session, region)
+        if resource_scope == "ALL":
+            resource_types = get_available_resource_types(boto_session, region)
+        elif resource_scope == "ESSENTIAL":
+            resource_types = get_essential_resource_types()
+        else:
+            raise Exception("Resource scope must either be ALL or ESSENTIAL")
 
         # Using a higher number of threads unfortunately leads to API throttling instead of being faster
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -141,9 +201,7 @@ if __name__ == "__main__":
 
         result_collection["_metadata"]["denied_list_operations"][region].sort()
 
-    # Write result file
-    output_file_name = "resources_{}_{}.json".format(sts_response["Account"], run_timestamp)
-    with open(output_file_name, "w") as out_file:
-        json.dump(result_collection, out_file, indent=2, sort_keys=True)
-
-    print("Output file written to {}".format(output_file_name))
+    if output_format == "JSON":
+        write_to_json(result_collection, output_type)
+    else:
+        write_to_csv(result_collection, output_type)
